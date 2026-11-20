@@ -19,7 +19,8 @@ export async function fetchAppConfig(): Promise<AppRuntimeConfig> {
 
   try {
     const res = await fetch('/api/config');
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
       const serverConfig = (await res.json()) as AppRuntimeConfig;
       const supabaseUrl = serverConfig.supabaseUrl || envUrl;
       const supabaseAnonKey = serverConfig.supabaseAnonKey || envAnonKey;
@@ -27,7 +28,8 @@ export async function fetchAppConfig(): Promise<AppRuntimeConfig> {
         supabaseUrl,
         supabaseAnonKey,
         configured: Boolean(supabaseUrl && supabaseAnonKey),
-        serviceRoleConfigured: serverConfig.serviceRoleConfigured,
+        serviceRoleConfigured: Boolean(serverConfig.serviceRoleConfigured),
+        directDbConfigured: Boolean(serverConfig.directDbConfigured),
       };
       return cachedConfig;
     }
@@ -40,6 +42,7 @@ export async function fetchAppConfig(): Promise<AppRuntimeConfig> {
     supabaseAnonKey: envAnonKey,
     configured: Boolean(envUrl && envAnonKey),
     serviceRoleConfigured: false,
+    directDbConfigured: false,
   };
   return cachedConfig;
 }

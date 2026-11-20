@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, CheckCircle2, Copy, Database, Download, GitBranch, X, XCircle } from 'lucide-react';
+import schemaSqlRaw from '../../supabase/schema.sql?raw';
 
 interface SchemaModalProps {
   open: boolean;
@@ -42,30 +43,33 @@ const RELATION_SUMMARY = [
 ];
 
 export function SchemaModal({ open, onClose }: SchemaModalProps) {
-  const [sql, setSql] = useState<string>('');
-  const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [dbStatus, setDbStatus] = useState<DbStatusResponse | null>(null);
   const [migrating, setMigrating] = useState(false);
   const [migrateMsg, setMigrateMsg] = useState<string | null>(null);
 
+  const sql = schemaSqlRaw;
+
   const loadStatus = () => {
     fetch('/api/db/status')
-      .then((res) => res.json())
-      .then((data: DbStatusResponse) => setDbStatus(data))
+      .then(async (res) => {
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || !ct.includes('application/json')) return null;
+        return (await res.json()) as DbStatusResponse;
+      })
+      .then((data) => {
+        if (data && Array.isArray(data.tables)) {
+          setDbStatus(data);
+        } else {
+          setDbStatus(null);
+        }
+      })
       .catch(() => setDbStatus(null));
   };
 
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
     setMigrateMsg(null);
-    fetch('/api/schema-sql')
-      .then((res) => res.text())
-      .then((text) => setSql(text))
-      .catch(() => setSql('-- Gagal memuat supabase/schema.sql'))
-      .finally(() => setLoading(false));
-
     loadStatus();
   }, [open]);
 
@@ -97,8 +101,13 @@ export function SchemaModal({ open, onClose }: SchemaModalProps) {
     setMigrateMsg(null);
     try {
       const res = await fetch('/api/db/migrate', { method: 'POST' });
-      const data = await res.json();
-      setMigrateMsg(data.message);
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await res.json();
+        setMigrateMsg(data.message || 'Proses migrasi selesai.');
+      } else {
+        setMigrateMsg('Endpoint migrasi belum tersedia di environment ini. Gunakan tombol Salin SQL.');
+      }
       if (res.ok) {
         loadStatus();
       }
@@ -154,9 +163,7 @@ export function SchemaModal({ open, onClose }: SchemaModalProps) {
           {dbStatus && (
             <div className="pt-2 border-t border-zinc-200">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <p className="text-xs font-bold text-zinc-900">
-                  Status Tabel di Supabase:
-                </p>
+                <p className="text-xs font-bold text-zinc-900">Status Tabel di Supabase:</p>
                 {dbStatus.directDbConfigured && (
                   <button
                     type="button"
@@ -195,13 +202,9 @@ export function SchemaModal({ open, onClose }: SchemaModalProps) {
         </div>
 
         <div className="flex-1 overflow-auto p-6 bg-zinc-950 text-zinc-100 min-h-[200px]">
-          {loading ? (
-            <p className="text-sm text-zinc-400 font-mono">Memuat skrip SQL...</p>
-          ) : (
-            <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
-              {sql}
-            </pre>
-          )}
+          <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
+            {sql}
+          </pre>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t border-zinc-200 bg-white">
@@ -214,8 +217,7 @@ export function SchemaModal({ open, onClose }: SchemaModalProps) {
             <button
               type="button"
               onClick={handleDownload}
-              disabled={!sql || loading}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-zinc-700 bg-zinc-100 hover:bg-zinc-200 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-zinc-700 bg-zinc-100 hover:bg-zinc-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5" />
               Unduh .sql
@@ -223,8 +225,7 @@ export function SchemaModal({ open, onClose }: SchemaModalProps) {
             <button
               type="button"
               onClick={handleCopy}
-              disabled={!sql || loading}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
             >
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               {copied ? 'Tersalin' : 'Salin SQL'}

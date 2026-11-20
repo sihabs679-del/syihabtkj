@@ -36,72 +36,104 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const loadUserProfile = useCallback(async (activeSession: Session | null, appConfig: AppRuntimeConfig | null) => {
-    if (!activeSession?.user) {
-      setProfile(null);
-      return;
-    }
-
-    try {
-      // First try server-side bootstrap which ensures the first user in Supabase Auth receives 'admin'
-      if (appConfig?.serviceRoleConfigured) {
-        const res = await fetch('/api/auth/bootstrap-profile', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeSession.access_token}`,
-          },
-        });
-
-        const payload = await res.json();
-        if (res.ok && payload.profile) {
-          setProfile(payload.profile as UserProfile);
-          setAuthError(null);
-          return;
-        }
-        if (payload?.error) {
-          setAuthError(payload.error);
-        }
-      }
-
-      // Fallback to direct client query (requires schema & trigger in Supabase)
-      const client = await getSupabaseClient();
-      if (!client) return;
-
-      const { data: directProfile, error: directErr } = await client
-        .from('profiles')
-        .select('*')
-        .eq('id', activeSession.user.id)
-        .maybeSingle();
-
-      if (directErr) {
-        setAuthError(directErr.message);
+  const loadUserProfile = useCallback(
+    async (activeSession: Session | null, appConfig: AppRuntimeConfig | null) => {
+      if (!activeSession?.user) {
+        setProfile(null);
         return;
       }
 
-      if (directProfile) {
-        setProfile(directProfile as UserProfile);
-        setAuthError(null);
-      } else {
-        // Fallback synthesized from auth metadata if trigger hasn't populated profiles yet
+      try {
+        // First try server-side bootstrap which ensures the first user in Supabase Auth receives 'admin'
+        if (appConfig?.serviceRoleConfigured) {
+          const res = await fetch('/api/auth/bootstrap-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${activeSession.access_token}`,
+            },
+          });
+
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const payload = await res.json();
+            if (res.ok && payload.profile) {
+              setProfile(payload.profile as UserProfile);
+              setAuthError(null);
+              return;
+            }
+            if (payload?.error) {
+              setAuthError(payload.error);
+            }
+          }
+        }
+
+        // Direct client query fallback
+        const client = await getSupabaseClient();
+        if (!client) return;
+
+        const { data: directProfile, error: directErr } = await client
+          .from('profiles')
+          .select('*')
+          .eq('id', activeSession.user.id)
+          .maybeSingle();
+
+        if (directErr) {
+          setAuthError(directErr.message);
+          return;
+        }
+
+        if (directProfile) {
+          setProfile(directProfile as UserProfile);
+          setAuthError(null);
+          return;
+        }
+
+        // Auto-create own profile if trigger didn't run (e.g. user existed before schema.sql)
         const meta = activeSession.user.user_metadata || {};
-        setProfile({
-          id: activeSession.user.id,
-          email: activeSession.user.email || '',
-          full_name: meta.full_name || activeSession.user.email?.split('@')[0] || 'Pengguna',
-          nip: meta.nip || '',
-          role:
-            meta.role === 'admin' || meta.role === 'guru' || meta.role === 'tenaga_kependidikan'
-              ? meta.role
-              : 'tenaga_kependidikan',
-          jabatan: meta.jabatan || '',
-          created_at: activeSession.user.created_at,
-        });
+        const fallbackRole =
+          meta.role === 'admin' || meta.role === 'guru' || meta.role === 'tenaga_kependidikan'
+            ? meta.role
+            : 'tenaga_kependidikan';
+
+        const { data: createdProfile, error: insertErr } = await client
+          .from('profiles')
+          .upsert(
+            {
+              id: activeSession.user.id,
+              email: activeSession.user.email || '',
+              full_name:
+                meta.full_name || activeSession.user.email?.split('@')[0] || 'Pengguna',
+              nip: meta.nip || '',
+              role: fallbackRole,
+              jabatan: meta.jabatan || '',
+            },
+            { onConflict: 'id' }
+          )
+          .select('*')
+          .maybeSingle();
+
+        if (!insertErr && createdProfile) {
+          setProfile(createdProfile as UserProfile);
+          setAuthError(null);
+        } else {
+          setProfile({
+            id: activeSession.user.id,
+            email: activeSession.user.email || '',
+            full_name:
+              meta.full_name || activeSession.user.email?.split('@')[0] || 'Pengguna',
+            nip: meta.nip || '',
+            role: fallbackRole,
+            jabatan: meta.jabatan || '',
+            created_at: activeSession.user.created_at,
+          });
+        }
+      } catch (err) {
+        setAuthError(err instanceof Error ? err.message : 'Gagal memuat profil pengguna.');
       }
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Gagal memuat profil pengguna.');
-    }
-  }, []);
+    },
+    []
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -169,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthError(null);
     const client = await getSupabaseClient();
     if (!client) {
-      return { error: 'Konfigurasi Supabase belum terpasang pada server.' };
+      return { error: 'Konfigurasi Supabase belum terpasang pada server atau environment.' };
     }
 
     const { data, error } = await client.auth.signInWithPassword({
@@ -204,7 +236,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthError(null);
     const client = await getSupabaseClient();
     if (!client) {
-      return { error: 'Konfigurasi Supabase belum terpasang pada server.' };
+      return { error: 'Konfigurasi Supabase belum terpasang pada server atau environment.' };
     }
 
     const { data, error } = await client.auth.signUp({

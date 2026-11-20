@@ -1,6 +1,9 @@
 -- ==============================================================================
 -- SMK Prima Unggul - Sistem Absensi Siswa & Karyawan
--- Skema Database Relasional Supabase (PostgreSQL + Auth Trigger + RLS + Views)
+-- Skema Database Relasional Supabase (Idempotent Install & Upgrade Script)
+--
+-- Aman dijalankan ulang (idempotent) baik pada database baru maupun database
+-- yang sudah memiliki tabel versi sebelumnya.
 --
 -- Peta Relasi Tabel:
 --   auth.users (id)
@@ -58,6 +61,10 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+alter table public.profiles add column if not exists nip text not null default '';
+alter table public.profiles add column if not exists jabatan text not null default '';
+alter table public.profiles add column if not exists updated_at timestamptz not null default now();
+
 -- 3. Tabel Master Kelas (Berelasi ke Jurusan dan Wali Kelas di Profiles)
 create table if not exists public.classes (
   id uuid primary key default gen_random_uuid(),
@@ -81,6 +88,22 @@ create table if not exists public.students (
   updated_at timestamptz not null default now()
 );
 
+-- Upgrade kolom & constraint jika tabel students sudah ada dari versi sebelumnya
+alter table public.students add column if not exists class_id uuid references public.classes(id) on delete set null;
+alter table public.students add column if not exists updated_at timestamptz not null default now();
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'students_jurusan_fkey'
+  ) then
+    alter table public.students
+      add constraint students_jurusan_fkey
+      foreign key (jurusan) references public.jurusan(code)
+      on update cascade on delete restrict;
+  end if;
+end $$;
+
 -- 5. Tabel Absensi Karyawan (Admin, Guru, Tenaga Kependidikan -> berelasi ke Profiles)
 create table if not exists public.employee_attendance (
   id uuid primary key default gen_random_uuid(),
@@ -95,6 +118,8 @@ create table if not exists public.employee_attendance (
   unique(user_id, attendance_date)
 );
 
+alter table public.employee_attendance add column if not exists updated_at timestamptz not null default now();
+
 -- 6. Tabel Absensi Siswa (Berelasi ke Students & Profiles pencatat/Guru)
 create table if not exists public.student_attendance (
   id uuid primary key default gen_random_uuid(),
@@ -108,6 +133,8 @@ create table if not exists public.student_attendance (
   unique(student_id, attendance_date)
 );
 
+alter table public.student_attendance add column if not exists updated_at timestamptz not null default now();
+
 -- Index untuk percepatan query relasional, rekap & filter
 create index if not exists idx_classes_jurusan on public.classes(jurusan_code);
 create index if not exists idx_students_kelas on public.students(kelas);
@@ -118,6 +145,25 @@ create index if not exists idx_emp_att_user on public.employee_attendance(user_i
 create index if not exists idx_stu_att_date on public.student_attendance(attendance_date);
 create index if not exists idx_stu_att_student on public.student_attendance(student_id);
 create index if not exists idx_stu_att_recorder on public.student_attendance(recorded_by);
+
+-- ==============================================================================
+-- Backfill Relasi Kelas untuk Data Siswa yang Sudah Ada
+-- ==============================================================================
+
+insert into public.classes (name, tingkat, jurusan_code)
+select distinct
+  upper(trim(s.kelas)),
+  coalesce(nullif(split_part(upper(trim(s.kelas)), ' ', 1), ''), 'X'),
+  s.jurusan
+from public.students s
+where trim(s.kelas) <> ''
+on conflict (name) do nothing;
+
+update public.students s
+set class_id = c.id
+from public.classes c
+where c.name = upper(trim(s.kelas))
+  and s.class_id is null;
 
 -- ==============================================================================
 -- Trigger Relasional: Otomatis Sinkronisasi Siswa -> Tabel Classes
@@ -218,6 +264,36 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
+-- Sinkronisasi user yang sudah terdaftar di auth.users sebelum skema dijalankan
+insert into public.profiles (id, email, full_name, nip, role, jabatan)
+select
+  u.id,
+  coalesce(u.email, ''),
+  coalesce(nullif(trim(u.raw_user_meta_data->>'full_name'), ''), split_part(coalesce(u.email, 'user'), '@', 1)),
+  coalesce(u.raw_user_meta_data->>'nip', ''),
+  case
+    when row_number() over (order by u.created_at asc) = 1
+      and not exists (select 1 from public.profiles where role = 'admin')
+    then 'admin'
+    when u.raw_user_meta_data->>'role' in ('admin', 'guru', 'tenaga_kependidikan')
+    then u.raw_user_meta_data->>'role'
+    else 'tenaga_kependidikan'
+  end,
+  coalesce(u.raw_user_meta_data->>'jabatan', '')
+from auth.users u
+where not exists (select 1 from public.profiles p where p.id = u.id)
+on conflict (id) do nothing;
+
+-- Pastikan jika belum ada admin sama sekali di profiles, user paling awal dipromosikan menjadi admin
+update public.profiles
+set role = 'admin', updated_at = now()
+where id = (
+  select id from public.profiles order by created_at asc limit 1
+)
+and not exists (
+  select 1 from public.profiles where role = 'admin'
+);
+
 -- ==============================================================================
 -- Relational Views untuk Rekap Absensi
 -- ==============================================================================
@@ -261,8 +337,19 @@ from public.employee_attendance ea
 join public.profiles p on p.id = ea.user_id;
 
 -- ==============================================================================
--- Row Level Security (RLS)
+-- Hak Akses Schema & Row Level Security (RLS)
 -- ==============================================================================
+
+grant usage on schema public to anon, authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+grant select on public.jurusan to anon, authenticated;
+grant select, insert, update, delete on public.profiles to authenticated;
+grant select, insert, update, delete on public.classes to authenticated;
+grant select, insert, update, delete on public.students to authenticated;
+grant select, insert, update, delete on public.employee_attendance to authenticated;
+grant select, insert, update, delete on public.student_attendance to authenticated;
+grant select on public.v_student_attendance_recap to authenticated;
+grant select on public.v_employee_attendance_recap to authenticated;
 
 alter table public.jurusan enable row level security;
 alter table public.classes enable row level security;
@@ -271,7 +358,7 @@ alter table public.students enable row level security;
 alter table public.employee_attendance enable row level security;
 alter table public.student_attendance enable row level security;
 
--- Policies: jurusan (dapat dibaca publik/authenticated)
+-- Policies: jurusan
 drop policy if exists "Jurusan readable by all" on public.jurusan;
 create policy "Jurusan readable by all"
   on public.jurusan for select
@@ -298,6 +385,12 @@ create policy "Profiles selectable by owner or admin"
   on public.profiles for select
   to authenticated
   using (auth.uid() = id or public.get_my_role() in ('admin', 'guru'));
+
+drop policy if exists "Profiles insertable by self" on public.profiles;
+create policy "Profiles insertable by self"
+  on public.profiles for insert
+  to authenticated
+  with check (auth.uid() = id);
 
 drop policy if exists "Profiles updatable by admin or self" on public.profiles;
 create policy "Profiles updatable by admin or self"

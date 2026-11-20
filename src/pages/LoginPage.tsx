@@ -41,9 +41,13 @@ export default function LoginPage() {
 
   useEffect(() => {
     fetch('/api/auth/first-user-status')
-      .then((r) => r.json())
+      .then(async (r) => {
+        const ct = r.headers.get('content-type') || '';
+        if (!r.ok || !ct.includes('application/json')) return null;
+        return r.json();
+      })
       .then((d) => {
-        if (typeof d.hasUsers === 'boolean') {
+        if (d && typeof d.hasUsers === 'boolean') {
           setHasUsers(d.hasUsers);
           if (!d.hasUsers) {
             setMode('register');
@@ -210,11 +214,12 @@ export default function LoginPage() {
                 <div>
                   <p className="font-semibold">Konfigurasi Supabase Diperlukan</p>
                   <p className="mt-1 text-xs text-amber-900 leading-relaxed">
-                    Tambahkan environment variable berikut pada panel Secrets / <code className="font-mono">.env</code>:
+                    Tambahkan environment variable berikut pada Vercel Environment Variables atau
+                    panel Secrets AI Studio, lalu redeploy/restart:
                   </p>
                   <ul className="mt-2 space-y-1 text-xs font-mono text-amber-900">
-                    <li>SUPABASE_URL</li>
-                    <li>SUPABASE_ANON_KEY</li>
+                    <li>SUPABASE_URL &amp; VITE_SUPABASE_URL</li>
+                    <li>SUPABASE_ANON_KEY &amp; VITE_SUPABASE_ANON_KEY</li>
                     <li>SUPABASE_SERVICE_ROLE_KEY</li>
                   </ul>
                   <button

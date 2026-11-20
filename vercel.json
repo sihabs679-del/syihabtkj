@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "supabase/schema.sql"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/((?!api/|assets/|src/assets/|.*\\.(?:js|mjs|css|jpg|jpeg|png|gif|webp|svg|ico|woff2?|ttf|json|txt|map)$).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
